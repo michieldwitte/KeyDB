@@ -1518,6 +1518,16 @@ dictType dbDictType = {
     dictGCAsyncFree             /* async free destructor */
 };
 
+dictType dbExpiresDictType = {
+        dictSdsHash,                /* hash function */
+        NULL,                       /* key dup */
+        NULL,                       /* val dup */
+        dictSdsKeyCompare,          /* key compare */
+        NULL,                       /* key destructor */
+        NULL,                       /* val destructor */
+        dictExpandAllowed           /* allow to expand */
+    };
+
 /* db->pdict, keys are sds strings, vals are Redis objects. */
 dictType dbTombstoneDictType = {
     dictSdsHash,                /* hash function */
@@ -1548,17 +1558,6 @@ dictType shaScriptObjectDictType = {
     dictSdsDestructor,          /* key destructor */
     dictObjectDestructor,       /* val destructor */
     NULL                        /* allow to expand */
-};
-
-/* Db->expires */
-dictType dbExpiresDictType = {
-    dictSdsHash,                /* hash function */
-    NULL,                       /* key dup */
-    NULL,                       /* val dup */
-    dictSdsKeyCompare,          /* key compare */
-    NULL,                       /* key destructor */
-    NULL,                       /* val destructor */
-    dictExpandAllowed           /* allow to expand */
 };
 
 /* Command table. sds string -> command struct pointer. */
@@ -1871,6 +1870,9 @@ VersionCompareResult compareVersion(SymVer *pver)
     if ((symVerThis.major == 0 && symVerThis.minor == 0 && symVerThis.build == 0)
         || (pver->major == 0 && pver->minor == 0 && pver->build == 0))
         return VersionCompareResult::EqualVersion;
+
+    if (pver->major <= 6 && pver->minor <= 3 && pver->build <= 3)
+        return VersionCompareResult::IncompatibleVersion;
     
     for (int iver = 0; iver < 3; ++iver)
     {
@@ -2135,7 +2137,7 @@ void databasesCron(bool fMainThread) {
                 ::dict *dict = g_pserver->db[rehash_db]->dictUnsafeKeyOnly();
                 /* Are we async rehashing? And if so is it time to re-calibrate? */
                 /* The recalibration limit is a prime number to ensure balancing across threads */
-                if (rehashes_per_ms > 0 && async_rehashes < 131 && !cserver.active_defrag_enabled && cserver.cthreads > 1 && dictSize(dict) > 2048 && dictIsRehashing(dict) && !g_pserver->loading) {
+                if (g_pserver->enable_async_rehash && rehashes_per_ms > 0 && async_rehashes < 131 && !cserver.active_defrag_enabled && cserver.cthreads > 1 && dictSize(dict) > 2048 && dictIsRehashing(dict) && !g_pserver->loading && aeLockContention() > 1) {
                     serverTL->rehashCtl = dictRehashAsyncStart(dict, rehashes_per_ms * ((1000 / g_pserver->hz) / 10));  // Estimate 10% CPU time spent in lock contention
                     if (serverTL->rehashCtl)
                         ++async_rehashes;
@@ -3923,18 +3925,18 @@ void initServer(void) {
             g_pserver->db[j]->initialize(j);
         }
     } else {
-        // Read FLASH metadata and load the appropriate dbid into each databse index, as each DB index can have different dbid mapped due to the swapdb command.
+        // Read FLASH metadata and load the appropriate storage dbid into each databse index, as each DB index can have different storage dbid mapped due to the swapdb command.
         g_pserver->metadataDb = g_pserver->m_pstorageFactory->createMetadataDb();
         for (int idb = 0; idb < cserver.dbnum; ++idb)
         {
-            int dbid = idb;
+            int storage_dbid = idb;
             std::string dbid_key = "db-" + std::to_string(idb);
             g_pserver->metadataDb->retrieve(dbid_key.c_str(), dbid_key.length(), [&](const char *, size_t, const void *data, size_t){
-                dbid = *(int*)data;
+                storage_dbid = *(int*)data;
             });
 
             g_pserver->db[idb] = new (MALLOC_LOCAL) redisDb();
-            g_pserver->db[idb]->initialize(dbid);
+            g_pserver->db[idb]->initialize(idb, storage_dbid);
         }
     }
 
@@ -5100,8 +5102,8 @@ int processCommand(client *c, int callFlags) {
 
             sds str = sdsempty();
             for (int j = 0; j < numkeys; j++) {
-                sdscatsds(str, (sds)ptrFromObj(c->argv[keyindex[j]]));
-                sdscat(str, " ");
+                str = sdscatsds(str, (sds)ptrFromObj(c->argv[keyindex[j]]));
+                str = sdscat(str, " ");
             }
         
             if (numkeys > 0)
@@ -5661,7 +5663,8 @@ sds genRedisInfoString(const char *section) {
             "lru_clock:%u\r\n"
             "executable:%s\r\n"
             "config_file:%s\r\n"
-            "availability_zone:%s\r\n",
+            "availability_zone:%s\r\n"
+            "features:%s\r\n",
             KEYDB_SET_VERSION,
             redisGitSHA1(),
             strtol(redisGitDirty(),NULL,10) > 0,
@@ -5688,7 +5691,8 @@ sds genRedisInfoString(const char *section) {
             lruclock,
             cserver.executable ? cserver.executable : "",
             cserver.configfile ? cserver.configfile : "",
-            g_pserver->sdsAvailabilityZone);
+            g_pserver->sdsAvailabilityZone,
+            "cluster_mget");
     }
 
     /* Clients */

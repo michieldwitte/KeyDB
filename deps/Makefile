@@ -34,11 +34,17 @@ ifneq ($(shell sh -c '[ -f .make-ldflags ] && cat .make-ldflags || echo none'), 
 endif
 
 distclean:
+ifneq ($(USE_SYSTEM_HIREDIS),yes)
 	-(cd hiredis && $(MAKE) clean) > /dev/null || true
+endif
 	-(cd linenoise && $(MAKE) clean) > /dev/null || true
 	-(cd lua && $(MAKE) clean) > /dev/null || true
+ifneq ($(USE_SYSTEM_JEMALLOC),yes)
 	-(cd jemalloc && [ -f Makefile ] && $(MAKE) distclean) > /dev/null || true
+endif
+ifneq ($(USE_SYSTEM_ROCKSDB),yes)
 	-(cd rocksdb && $(MAKE) clean) > /dev/null || true
+endif
 	-(cd hdr_histogram && $(MAKE) clean) > /dev/null || true
 	-(rm -f .make-*)
 

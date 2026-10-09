@@ -49,8 +49,6 @@ Join us on [Slack](https://docs.keydb.dev/slack/)
 
 Learn more using KeyDB's extensive [documentation](https://docs.keydb.dev)
 
-Post to our [Community Forum](https://community.keydb.dev)
-
 See the [KeyDB Roadmap](https://docs.keydb.dev/docs/coming-soon) to see what's in store
 
 
@@ -80,7 +78,7 @@ The minimum number of clients on a thread before KeyDB assigns new connections t
 ```
 replica-weighting-factor 2
 ```
-KeyDB will attempt to balance clients across threads evenly; However, replica clients are usually much more expensive than a normal client, and so KeyDB will try to assign fewer clients to threads with a replica.  The weighting factor below is intented to help tune this behavior.  A replica weighting factor of 2 means we treat a replica as the equivalent of two normal clients.  Adjusting this value may improve performance when replication is used.  The best weighting is workload specific - e.g. read heavy workloads should set this to 1.  Very write heavy workloads may benefit from higher numbers.
+KeyDB will attempt to balance clients across threads evenly; However, replica clients are usually much more expensive than a normal client, and so KeyDB will try to assign fewer clients to threads with a replica.  The weighting factor below is intended to help tune this behavior.  A replica weighting factor of 2 means we treat a replica as the equivalent of two normal clients.  Adjusting this value may improve performance when replication is used.  The best weighting is workload specific - e.g. read heavy workloads should set this to 1.  Very write heavy workloads may benefit from higher numbers.
 
 ```
 active-client-balancing yes

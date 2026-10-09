@@ -20,7 +20,7 @@ release_hdr := $(shell sh -c './mkreleasehdr.sh')
 uname_S := $(shell sh -c 'uname -s 2>/dev/null || echo not')
 uname_M := $(shell sh -c 'uname -m 2>/dev/null || echo not')
 OPTIMIZATION?=-O2 -flto
-DEPENDENCY_TARGETS=hiredis linenoise lua hdr_histogram
+DEPENDENCY_TARGETS=linenoise lua hdr_histogram
 NODEPS:=clean distclean
 
 # Default settings
@@ -73,11 +73,18 @@ ifneq ($(strip $(SANITIZE)),)
 endif
 
 ifeq ($(ENABLE_FLASH),yes)
+	STORAGE_OBJ+= storage/rocksdb.o storage/rocksdbfactory.o
+ifeq ($(USE_SYSTEM_ROCKSDB),yes)
+	FINAL_LIBS+= $(shell pkg-config --libs rocksdb)
+	FINAL_CXXFLAGS+= $(shell pkg-config --cflags rocksdb) -DENABLE_ROCKSDB
+
+else
 	FINAL_LIBS+= -lz -lcrypto -lbz2 -lzstd -llz4 -lsnappy
 	CXXFLAGS+= -I../deps/rocksdb/include/ -DENABLE_ROCKSDB
-	STORAGE_OBJ+= storage/rocksdb.o storage/rocksdbfactory.o
+	FINAL_CXXFLAGS+= -I../deps/rocksdb/include/
 	FINAL_LIBS+= ../deps/rocksdb/librocksdb.a 
 	DEPENDENCY_TARGETS+= rocksdb
+endif
 endif
 
 
@@ -267,8 +274,14 @@ ifdef OPENSSL_PREFIX
 endif
 
 # Include paths to dependencies
-FINAL_CFLAGS+= -I../deps/hiredis -I../deps/linenoise -I../deps/lua/src -I../deps/hdr_histogram
-FINAL_CXXFLAGS+= -I../deps/hiredis -I../deps/linenoise -I../deps/lua/src -I../deps/hdr_histogram -I../deps/rocksdb/include/ -I../deps/concurrentqueue
+FINAL_CFLAGS+= -I../deps/linenoise -I../deps/lua/src -I../deps/hdr_histogram
+FINAL_CXXFLAGS+= -I../deps/linenoise -I../deps/lua/src -I../deps/hdr_histogram
+
+ifeq ($(USE_SYSTEM_CONCURRENTQUEUE),yes)
+	FINAL_CXXFLAGS+= -I/usr/include/concurrentqueue/moodycamel
+else
+	FINAL_CXXFLAGS+= -I../deps/concurrentqueue
+endif
 
 # Determine systemd support and/or build preference (defaulting to auto-detection)
 BUILD_WITH_SYSTEMD=no
@@ -311,10 +324,16 @@ ifeq ($(MALLOC),tcmalloc_minimal)
 endif
 
 ifeq ($(MALLOC),jemalloc)
+ifeq ($(USE_SYSTEM_JEMALLOC),yes)
+	FINAL_CFLAGS+= -DUSE_JEMALLOC $(shell $(PKG_CONFIG) --cflags jemalloc)
+	FINAL_CXXFLAGS+= -DUSE_JEMALLOC $(shell $(PKG_CONFIG) --cflags jemalloc)
+	FINAL_LIBS := $(shell $(PKG_CONFIG) --libs jemalloc) $(FINAL_LIBS)
+else
 	DEPENDENCY_TARGETS+= jemalloc
 	FINAL_CFLAGS+= -DUSE_JEMALLOC -I../deps/jemalloc/include
 	FINAL_CXXFLAGS+= -DUSE_JEMALLOC -I../deps/jemalloc/include
 	FINAL_LIBS := ../deps/jemalloc/lib/libjemalloc.a $(FINAL_LIBS)
+endif
 endif
 
 ifeq ($(MALLOC),memkind)
@@ -324,6 +343,22 @@ ifeq ($(MALLOC),memkind)
 	FINAL_LIBS := ../deps/memkind/src/.libs/libmemkind.a -lnuma $(FINAL_LIBS)
 endif
 
+ifeq ($(USE_SYSTEM_HIREDIS),yes)
+	HIREDIS_CFLAGS := $(shell $(PKG_CONFIG) --cflags hiredis) -DUSE_SYSTEM_HIREDIS=1
+	FINAL_CFLAGS+= $(HIREDIS_CFLAGS)
+	FINAL_CXXFLAGS+= $(HIREDIS_CFLAGS)
+	FINAL_LIBS+= $(shell $(PKG_CONFIG) --libs hiredis)
+ifeq ($(BUILD_TLS),yes)
+	HIREDIS_TLS_CFLAGS := $(shell $(PKG_CONFIG) --cflags hiredis_ssl)
+	FINAL_CFLAGS+= $(HIREDIS_TLS_CFLAGS)
+	FINAL_CXXFLAGS+= $(HIREDIS_TLS_CFLAGS)
+	FINAL_LIBS+= $(shell $(PKG_CONFIG) --libs hiredis_ssl)
+endif
+else
+	DEPENDENCY_TARGETS+= hiredis
+	FINAL_CFLAGS+= -I../deps/hiredis
+	FINAL_CXXFLAGS+= -I../deps/hiredis
+	FINAL_LIBS+=../deps/hiredis/libhiredis.a
 ifeq ($(BUILD_TLS),yes)
 	FINAL_CFLAGS+=-DUSE_OPENSSL $(OPENSSL_CFLAGS)
 	FINAL_CXXFLAGS+=-DUSE_OPENSSL $(OPENSSL_CXXFLAGS)
@@ -342,6 +377,7 @@ else
 endif
 	FINAL_LIBS += ../deps/hiredis/libhiredis_ssl.a $(LIBSSL_LIBS) $(LIBCRYPTO_LIBS)
 endif
+endif
 
 ifndef V
     define MAKE_INSTALL
@@ -358,6 +394,7 @@ endif
 OS := $(shell cat /etc/os-release | grep ID= | head -n 1 | cut -d'=' -f2)
 ifeq ($(OS),alpine)
     FINAL_CXXFLAGS+=-DUNW_LOCAL_ONLY
+	FINAL_CXXFLAGS+=-DALPINE
     FINAL_LIBS += -lunwind
 endif
 
@@ -413,9 +450,12 @@ persist-settings: distclean
 	echo STD=$(STD) >> .make-settings
 	echo WARN=$(WARN) >> .make-settings
 	echo OPT=$(OPT) >> .make-settings
+	echo USE_SYSTEM_CONCURRENTQUEUE=$(USE_SYSTEM_CONCURRENTQUEUE) >> .make-settings
 	echo MALLOC=$(MALLOC) >> .make-settings
+	echo USE_SYSTEM_JEMALLOC=$(USE_SYSTEM_JEMALLOC) >> .make-settings
 	echo BUILD_TLS=$(BUILD_TLS) >> .make-settings
 	echo USE_SYSTEMD=$(USE_SYSTEMD) >> .make-settings
+	echo USE_SYSTEM_HIREDIS=$(USE_SYSTEM_HIREDIS) >> .make-settings
 	echo CFLAGS=$(CFLAGS) >> .make-settings
 	echo CXXFLAGS=$(CXXFLAGS) >> .make-settings
 	echo LDFLAGS=$(LDFLAGS) >> .make-settings
@@ -445,7 +485,7 @@ endif
 
 # keydb-server
 $(REDIS_SERVER_NAME): $(REDIS_SERVER_OBJ) $(KEYDB_SERVER_OBJ)
-	$(REDIS_LD) -o $@ $^ ../deps/hiredis/libhiredis.a ../deps/lua/src/liblua.a $(FINAL_LIBS)
+	$(REDIS_LD) -o $@ $^ ../deps/lua/src/liblua.a $(FINAL_LIBS)
 
 # keydb-sentinel
 $(REDIS_SENTINEL_NAME): $(REDIS_SERVER_NAME)
@@ -461,15 +501,15 @@ $(REDIS_CHECK_AOF_NAME): $(REDIS_SERVER_NAME)
 
 # keydb-cli
 $(REDIS_CLI_NAME): $(REDIS_CLI_OBJ)
-	$(REDIS_LD) -o $@ $^ ../deps/hiredis/libhiredis.a ../deps/linenoise/linenoise.o $(FINAL_LIBS)
+	$(REDIS_LD) -o $@ $^ ../deps/linenoise/linenoise.o $(FINAL_LIBS)
 
 # keydb-benchmark
 $(REDIS_BENCHMARK_NAME): $(REDIS_BENCHMARK_OBJ)
-	$(REDIS_LD) -o $@ $^ ../deps/hiredis/libhiredis.a ../deps/hdr_histogram/hdr_histogram.o $(FINAL_LIBS)
+	$(REDIS_LD) -o $@ $^ ../deps/hdr_histogram/hdr_histogram.o $(FINAL_LIBS)
 
 # keydb-diagnostic-tool
 $(KEYDB_DIAGNOSTIC_NAME): $(KEYDB_DIAGNOSTIC_OBJ)
-	$(REDIS_LD) -o $@ $^ ../deps/hiredis/libhiredis.a $(FINAL_LIBS)
+	$(REDIS_LD) -o $@ $^ $(FINAL_LIBS)
 
 DEP = $(REDIS_SERVER_OBJ:%.o=%.d) $(KEYDB_SERVER_OBJ:%.o=%.d) $(REDIS_CLI_OBJ:%.o=%.d) $(REDIS_BENCHMARK_OBJ:%.o=%.d)
 -include $(DEP)

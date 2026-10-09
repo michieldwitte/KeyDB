@@ -54,7 +54,7 @@
 #include <openssl/err.h>
 #include <hiredis_ssl.h>
 #endif
-#include <sdscompat.h> /* Use hiredis' sds compat header that maps sds calls to their hi_ variants */
+#include "sdscompat.h" /* Use hiredis' sds compat header that maps sds calls to their hi_ variants */
 #include <sds.h> /* use sds.h from hiredis, so that only one set of sds functions will be present in the binary */
 #include "adlist.h"
 #include "zmalloc.h"
@@ -2524,7 +2524,10 @@ cleanup:
 
 static int clusterManagerNodeConnect(clusterManagerNode *node) {
     if (node->context) redisFree(node->context);
-    node->context = redisConnect(node->ip, node->port);
+    struct timeval tv;
+    tv.tv_sec = config.cluster_manager_command.timeout / 1000;
+    tv.tv_usec = (config.cluster_manager_command.timeout % 1000) * 1000;
+    node->context = redisConnectWithTimeout(node->ip, node->port, tv);
     if (!node->context->err && config.tls) {
         const char *err = NULL;
         if (cliSecureConnection(node->context, config.sslconfig, &err) == REDIS_ERR && err) {
@@ -5626,7 +5629,10 @@ static int clusterManagerCommandImport(int argc, char **argv) {
     char *reply_err = NULL;
     redisReply *src_reply = NULL;
     // Connect to the source node.
-    redisContext *src_ctx = redisConnect(src_ip, src_port);
+    struct timeval tv;
+    tv.tv_sec = config.cluster_manager_command.timeout / 1000;
+    tv.tv_usec = (config.cluster_manager_command.timeout % 1000) * 1000;
+    redisContext *src_ctx = redisConnectWithTimeout(src_ip, src_port, tv);
     if (src_ctx->err) {
         success = 0;
         fprintf(stderr,"Could not connect to KeyDB at %s:%d: %s.\n", src_ip,

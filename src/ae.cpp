@@ -113,6 +113,8 @@ enum class AE_ASYNC_OP
     PostCppFunction,
     DeleteFileEvent,
     CreateFileEvent,
+    PostAsynDBFunction,
+
 };
 
 struct aeCommand
@@ -125,6 +127,8 @@ struct aeCommand
         aePostFunctionProc *proc;
         aeFileProc *fproc;
         std::function<void()> *pfn;
+        aePostFunctionTokenProc* tproc;
+
     };
     void *clientData;
 };
@@ -175,6 +179,17 @@ void aeProcessCmd(aeEventLoop *eventLoop, int fd, void *, int )
             (*cmd.pfn)();
 
             delete cmd.pfn;
+            break;
+        }
+        case AE_ASYNC_OP::PostAsynDBFunction:
+        {   //added to support async api IStorage
+           if (cmd.fLock && !ulock.owns_lock()) {
+                g_forkLock.releaseRead();
+                ulock.lock();
+                g_forkLock.acquireRead();
+            }  
+            ((aePostFunctionTokenProc*)cmd.tproc)(eventLoop,(StorageToken*)cmd.clientData);
+            break; 
         }
             break;
         }
@@ -249,6 +264,20 @@ int aePostFunction(aeEventLoop *eventLoop, aePostFunctionProc *proc, void *arg)
     cmd.op = AE_ASYNC_OP::PostFunction;
     cmd.proc = proc;
     cmd.clientData = arg;
+    cmd.fLock = true;
+    auto size = write(eventLoop->fdCmdWrite, &cmd, sizeof(cmd));
+    if (size != sizeof(cmd))
+        return AE_ERR;
+    return AE_OK;
+}
+
+int aePostFunction(aeEventLoop *eventLoop, aePostFunctionTokenProc *proc, StorageToken *token)
+{
+  //added to support async api IStorage
+    aeCommand cmd = {};
+    cmd.op = AE_ASYNC_OP::PostAsynDBFunction; 
+    cmd.tproc = proc;
+    cmd.clientData = (void*)token; 
     cmd.fLock = true;
     auto size = write(eventLoop->fdCmdWrite, &cmd, sizeof(cmd));
     if (size != sizeof(cmd))
@@ -861,7 +890,7 @@ void aeReleaseForkLock()
 
 void aeForkLockInChild()
 {
-    g_forkLock.setNotify(false);
+    g_forkLock.setMulti(false);
 }
 
 int aeThreadOwnsLock()
